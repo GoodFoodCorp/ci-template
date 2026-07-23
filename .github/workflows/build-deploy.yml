@@ -27,6 +27,7 @@ jobs:
       - name: Checkout du code applicatif
         uses: actions/checkout@v4
         with:
+          token: ${{ secrets.ORG_PIPELINE_TOKEN }}
           fetch-depth: 0 # Récupère l'historique complet pour trouver les tags
 
       - name: Formater le nom de l'image en minuscules
