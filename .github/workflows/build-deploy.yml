@@ -21,15 +21,51 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.versioning.outputs.new_tag }}
     steps:
       - name: Checkout du code applicatif
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Récupère l'historique complet pour trouver les tags
 
       - name: Formater le nom de l'image en minuscules
         id: string
         run: |
           APP_NAME_LOWER=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]')
           echo "app_name_lower=${APP_NAME_LOWER}" >> $GITHUB_OUTPUT
+
+      # -------------------------------------------------------------
+      # ÉTAPE AUTOMATIQUE : Ingestion et incrémentation du tag vX.X.X
+      # -------------------------------------------------------------
+      - name: Calculer le nouveau tag vX.X.X
+        id: versioning
+        run: |
+          # Récupère le dernier tag au format vX.X.X (ou v0.0.0 si aucun tag n'existe)
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Dernier tag trouvé : $LATEST_TAG"
+
+          # Extrait les numéros Majeur, Mineur et Patch
+          # Supprime le 'v' initial
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # Incrémente la version Patch (+1)
+          NEW_PATCH=$((PATCH + 1))
+          NEW_TAG="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+
+          echo "Nouveau tag généré : $NEW_TAG"
+          echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
+
+      # Créer le tag Git directement sur le dépôt de l'application
+      - name: Push du nouveau tag sur le dépôt applicatif
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.versioning.outputs.new_tag }}
+          git push origin ${{ steps.versioning.outputs.new_tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.ORG_PIPELINE_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -41,6 +77,7 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
+      # Build avec le tag vX.X.X et latest
       - name: Build et Push de l'image Docker
         uses: docker/build-push-action@v5
         with:
@@ -48,11 +85,11 @@ jobs:
           file: ${{ inputs.dockerfile_path }}
           push: true
           tags: |
-            registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:${{ github.sha }}
+            registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:${{ steps.versioning.outputs.new_tag }}
             registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:latest
 
   # -------------------------------------------------------------
-  # ÉTAPE AUTOMATIQUE : Mise à jour du dépôt GitOps pour ArgoCD
+  # Mise à jour du dépôt GitOps avec le tag vX.X.X
   # -------------------------------------------------------------
   update-gitops:
     needs: build-and-push
@@ -61,29 +98,24 @@ jobs:
       - name: Checkout du repo GitOps
         uses: actions/checkout@v4
         with:
-          repository: "GoodFoodCorp/k3s-gitops" # Remplacez par le nom exact de votre repo GitOps
+          repository: "GoodFoodCorp/k8s-gitops"
           token: ${{ secrets.ORG_PIPELINE_TOKEN }}
-          ref: "main" # Ou master selon la branche de votre repo GitOps
+          ref: "main"
 
       - name: Mettre à jour le tag image dans le deployment.yaml
         run: |
           APP_NAME_LOWER=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]')
           TARGET_FILE="apps/${APP_NAME_LOWER}/deployment.yaml"
+          NEW_TAG="${{ needs.build-and-push.outputs.new_tag }}"
 
-          # Vérifie si le fichier existe
           if [ -f "$TARGET_FILE" ]; then
-            echo "Mise à jour de l'image dans $TARGET_FILE..."
+            echo "Mise à jour de l'image vers le tag $NEW_TAG dans $TARGET_FILE..."
+            sed -i "s|image: registry.c-mbk.fr/${APP_NAME_LOWER}:.*|image: registry.c-mbk.fr/${APP_NAME_LOWER}:${NEW_TAG}|g" "$TARGET_FILE"
             
-            # Remplace le tag existant par le nouveau SHA du commit
-            sed -i "s|image: registry.c-mbk.fr/${APP_NAME_LOWER}:.*|image: registry.c-mbk.fr/${APP_NAME_LOWER}:${{ github.sha }}|g" "$TARGET_FILE"
-            
-            # Configuration de l'auteur du commit
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            
-            # Commit et push sur le repo GitOps
             git add "$TARGET_FILE"
-            git commit -m "bump(${APP_NAME_LOWER}): update image tag to ${{ github.sha }}"
+            git commit -m "bump(${APP_NAME_LOWER}): update image tag to ${NEW_TAG}"
             git push
           else
             echo "Erreur: Le fichier $TARGET_FILE est introuvable."
