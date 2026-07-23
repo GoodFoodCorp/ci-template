@@ -15,19 +15,25 @@ on:
         required: true
       REGISTRY_PASSWORD:
         required: true
+      ORG_PIPELINE_TOKEN:
+        required: true
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout du code
+      - name: Checkout du code applicatif
         uses: actions/checkout@v4
 
-      # Configuration du builder Docker avec support du cache
+      - name: Formater le nom de l'image en minuscules
+        id: string
+        run: |
+          APP_NAME_LOWER=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]')
+          echo "app_name_lower=${APP_NAME_LOWER}" >> $GITHUB_OUTPUT
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Connexion à votre registre privé
       - name: Connexion au Registre Privé
         uses: docker/login-action@v3
         with:
@@ -35,7 +41,6 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      # Build et Push vers votre registre
       - name: Build et Push de l'image Docker
         uses: docker/build-push-action@v5
         with:
@@ -43,5 +48,44 @@ jobs:
           file: ${{ inputs.dockerfile_path }}
           push: true
           tags: |
-            registry.c-mbk.fr/${{ inputs.app_name }}:${{ github.sha }}
-            registry.c-mbk.fr/${{ inputs.app_name }}:latest
+            registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:${{ github.sha }}
+            registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:latest
+
+  # -------------------------------------------------------------
+  # ÉTAPE AUTOMATIQUE : Mise à jour du dépôt GitOps pour ArgoCD
+  # -------------------------------------------------------------
+  update-gitops:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du repo GitOps
+        uses: actions/checkout@v4
+        with:
+          repository: "GoodFoodCorp/k8s-gitops" # Remplacez par le nom exact de votre repo GitOps
+          token: ${{ secrets.ORG_PIPELINE_TOKEN }}
+          ref: "main" # Ou master selon la branche de votre repo GitOps
+
+      - name: Mettre à jour le tag image dans le deployment.yaml
+        run: |
+          APP_NAME_LOWER=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]')
+          TARGET_FILE="apps/${APP_NAME_LOWER}/deployment.yaml"
+
+          # Vérifie si le fichier existe
+          if [ -f "$TARGET_FILE" ]; then
+            echo "Mise à jour de l'image dans $TARGET_FILE..."
+            
+            # Remplace le tag existant par le nouveau SHA du commit
+            sed -i "s|image: registry.c-mbk.fr/${APP_NAME_LOWER}:.*|image: registry.c-mbk.fr/${APP_NAME_LOWER}:${{ github.sha }}|g" "$TARGET_FILE"
+            
+            # Configuration de l'auteur du commit
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            # Commit et push sur le repo GitOps
+            git add "$TARGET_FILE"
+            git commit -m "bump(${APP_NAME_LOWER}): update image tag to ${{ github.sha }}"
+            git push
+          else
+            echo "Erreur: Le fichier $TARGET_FILE est introuvable."
+            exit 1
+          fi
