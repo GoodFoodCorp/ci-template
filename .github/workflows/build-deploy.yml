@@ -61,7 +61,7 @@ jobs:
       - name: Checkout du repo GitOps
         uses: actions/checkout@v4
         with:
-          repository: "GoodFoodCorp/k8s-gitops" # Remplacez par le nom exact de votre repo GitOps
+          repository: "GoodFoodCorp/k3s-gitops" # Remplacez par le nom exact de votre repo GitOps
           token: ${{ secrets.ORG_PIPELINE_TOKEN }}
           ref: "main" # Ou master selon la branche de votre repo GitOps
 
