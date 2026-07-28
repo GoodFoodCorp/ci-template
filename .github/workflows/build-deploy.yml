@@ -47,7 +47,6 @@ jobs:
           echo "Dernier tag trouvé : $LATEST_TAG"
 
           # Extrait les numéros Majeur, Mineur et Patch
-          # Supprime le 'v' initial
           VERSION=${LATEST_TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
@@ -57,14 +56,6 @@ jobs:
 
           echo "Nouveau tag généré : $NEW_TAG"
           echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
-
-      # # Créer le tag Git directement sur le dépôt de l'application
-      # - name: Push du nouveau tag sur le dépôt applicatif
-      #   run: |
-      #     git config user.name "github-actions[bot]"
-      #     git config user.email "github-actions[bot]@users.noreply.github.com"
-      #     git tag ${{ steps.versioning.outputs.new_tag }}
-      #     git push origin ${{ steps.versioning.outputs.new_tag }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -104,11 +95,15 @@ jobs:
       - name: Mettre à jour le tag image dans le deployment.yaml
         run: |
           APP_NAME_LOWER=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]')
-          TARGET_FILE="apps/${APP_NAME_LOWER}/deployment.yaml"
           NEW_TAG="${{ needs.build-and-push.outputs.new_tag }}"
 
-          if [ -f "$TARGET_FILE" ]; then
+          # Recherche automatique du fichier deployment.yaml dans apps/back/ ou apps/front/
+          TARGET_FILE=$(find apps -type f -path "*/${APP_NAME_LOWER}/deployment.yaml" | head -n 1)
+
+          if [ -n "$TARGET_FILE" ] && [ -f "$TARGET_FILE" ]; then
+            echo "Fichier trouvé : $TARGET_FILE"
             echo "Mise à jour de l'image vers le tag $NEW_TAG dans $TARGET_FILE..."
+            
             sed -i "s|image: registry.c-mbk.fr/${APP_NAME_LOWER}:.*|image: registry.c-mbk.fr/${APP_NAME_LOWER}:${NEW_TAG}|g" "$TARGET_FILE"
             
             git config user.name "github-actions[bot]"
@@ -117,6 +112,6 @@ jobs:
             git commit -m "bump(${APP_NAME_LOWER}): update image tag to ${NEW_TAG}"
             git push
           else
-            echo "Erreur: Le fichier $TARGET_FILE est introuvable."
+            echo "Erreur: Impossible de trouver un fichier deployment.yaml pour '${APP_NAME_LOWER}' dans le dossier apps/."
             exit 1
           fi
