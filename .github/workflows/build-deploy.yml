@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.ORG_PIPELINE_TOKEN }}
-          fetch-depth: 0
+          fetch-depth: 0 # Récupère l'historique complet pour trouver les tags
 
       - name: Formater le nom de l'image en minuscules
         id: string
@@ -36,19 +36,51 @@ jobs:
           APP_NAME_LOWER=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]')
           echo "app_name_lower=${APP_NAME_LOWER}" >> $GITHUB_OUTPUT
 
-      - name: Calculer le nouveau tag vX.X.X
+      # -------------------------------------------------------------
+      # ÉTAPE AUTOMATIQUE : Incrémentation et publication du tag vX.X.X
+      # -------------------------------------------------------------
+      - name: Calculer et publier le nouveau tag vX.X.X
         id: versioning
         run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          # Récupère le plus grand tag vX.X.X (ou v0.0.0 si aucun tag n'existe)
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          LATEST_TAG=${LATEST_TAG:-v0.0.0}
           echo "Dernier tag trouvé : $LATEST_TAG"
 
+          # Extrait les numéros Majeur, Mineur et Patch
           VERSION=${LATEST_TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
-          NEW_PATCH=$((PATCH + 1))
-          NEW_TAG="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          echo "Nouveau tag généré : $NEW_TAG"
+          # Publie le tag afin que le prochain push parte de cette version.
+          # En cas de concurrence, le patch suivant est essayé atomiquement.
+          NEW_PATCH=$((PATCH + 1))
+          while true; do
+            NEW_TAG="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+
+            if git ls-remote --exit-code --refs origin "refs/tags/${NEW_TAG}" >/dev/null 2>&1; then
+              NEW_PATCH=$((NEW_PATCH + 1))
+              continue
+            fi
+
+            git tag "${NEW_TAG}" "${GITHUB_SHA}"
+            if git push origin "${NEW_TAG}"; then
+              break
+            fi
+
+            git tag --delete "${NEW_TAG}"
+            if git ls-remote --exit-code --refs origin "refs/tags/${NEW_TAG}" >/dev/null 2>&1; then
+              NEW_PATCH=$((NEW_PATCH + 1))
+              continue
+            fi
+
+            echo "Erreur: impossible de publier le tag ${NEW_TAG}."
+            exit 1
+          done
+
+          echo "Nouveau tag généré et publié : $NEW_TAG"
           echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
@@ -61,6 +93,7 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
+      # Build avec le tag vX.X.X et latest
       - name: Build et Push de l'image Docker
         uses: docker/build-push-action@v5
         with:
@@ -71,13 +104,9 @@ jobs:
             registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:${{ steps.versioning.outputs.new_tag }}
             registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:latest
 
-      - name: Créer et pousser le tag Git sur le dépôt applicatif
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.versioning.outputs.new_tag }}
-          git push origin ${{ steps.versioning.outputs.new_tag }}
-
+  # -------------------------------------------------------------
+  # Mise à jour du dépôt GitOps avec le tag vX.X.X
+  # -------------------------------------------------------------
   update-gitops:
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -94,6 +123,7 @@ jobs:
           APP_NAME_LOWER=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]')
           NEW_TAG="${{ needs.build-and-push.outputs.new_tag }}"
 
+          # Recherche automatique du fichier deployment.yaml dans apps/back/ ou apps/front/
           TARGET_FILE=$(find apps -type f -path "*/${APP_NAME_LOWER}/deployment.yaml" | head -n 1)
 
           if [ -n "$TARGET_FILE" ] && [ -f "$TARGET_FILE" ]; then
@@ -105,15 +135,9 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add "$TARGET_FILE"
-
-            # Vérifie s'il y a réellement une modification à commiter
-            if git diff --staged --quiet; then
-              echo "Le tag $NEW_TAG est déjà appliqué dans $TARGET_FILE. Rien à commiter."
-            else
-              git commit -m "bump(${APP_NAME_LOWER}): update image tag to ${NEW_TAG}"
-              git push origin main
-            fi
+            git commit -m "bump(${APP_NAME_LOWER}): update image tag to ${NEW_TAG}"
+            git push
           else
-            echo "Erreur : Impossible de trouver un fichier deployment.yaml pour '${APP_NAME_LOWER}' dans le dossier apps/."
+            echo "Erreur: Impossible de trouver un fichier deployment.yaml pour '${APP_NAME_LOWER}' dans le dossier apps/."
             exit 1
           fi
