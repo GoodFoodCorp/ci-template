@@ -10,6 +10,23 @@ on:
         required: false
         type: string
         default: "./Dockerfile"
+      # Tests run before anything is built or tagged; empty = no test job.
+      test_image:
+        description: "Image the tests run in (e.g. golang:1.26, node:20, mcr.microsoft.com/dotnet/sdk:8.0)"
+        required: false
+        type: string
+        default: ""
+      test_command:
+        description: "Shell command running the tests (lint/vet included)"
+        required: false
+        type: string
+        default: ""
+      # The image is scanned before it is pushed: a CRITICAL fixable
+      # vulnerability blocks the release unless this is false.
+      fail_on_vulnerabilities:
+        required: false
+        type: boolean
+        default: true
     secrets:
       REGISTRY_USERNAME:
         required: true
@@ -19,7 +36,21 @@ on:
         required: true
 
 jobs:
+  test:
+    if: inputs.test_command != ''
+    runs-on: ubuntu-latest
+    container: ${{ inputs.test_image }}
+    steps:
+      - name: Checkout du code applicatif
+        uses: actions/checkout@v4
+
+      - name: Tests
+        run: ${{ inputs.test_command }}
+
   build-and-push:
+    needs: test
+    # Runs when the tests passed, or when the service declares none.
+    if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       new_tag: ${{ steps.versioning.outputs.new_tag }}
@@ -34,7 +65,7 @@ jobs:
         id: string
         run: |
           APP_NAME_LOWER=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]')
-          echo "app_name_lower=${APP_NAME_LOWER}" >> $GITHUB_OUTPUT
+          echo "app_name_lower=${APP_NAME_LOWER}" >> "$GITHUB_OUTPUT"
 
       # -------------------------------------------------------------
       # ÉTAPE AUTOMATIQUE : Incrémentation et publication du tag vX.X.X
@@ -84,7 +115,7 @@ jobs:
           done
 
           echo "Nouveau tag généré et publié : $NEW_TAG"
-          echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
+          echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -96,13 +127,33 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      # Build avec le tag vX.X.X et latest
-      - name: Build et Push de l'image Docker
+      # Build local d'abord, pour scanner l'image avant de la publier.
+      - name: Build de l'image Docker
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ inputs.dockerfile_path }}
+          load: true
+          tags: ${{ steps.string.outputs.app_name_lower }}:scan
+          cache-to: type=gha,mode=max
+          cache-from: type=gha
+
+      - name: Scan de vulnérabilités (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.string.outputs.app_name_lower }}:scan
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: ${{ inputs.fail_on_vulnerabilities && '1' || '0' }}
+
+      # Push avec le tag vX.X.X (immuable, référencé par le GitOps) et latest
+      - name: Push de l'image Docker
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ inputs.dockerfile_path }}
           push: true
+          cache-from: type=gha
           tags: |
             registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:${{ steps.versioning.outputs.new_tag }}
             registry.c-mbk.fr/${{ steps.string.outputs.app_name_lower }}:latest
