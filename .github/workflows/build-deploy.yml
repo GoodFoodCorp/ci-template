@@ -10,6 +10,12 @@ on:
         required: false
         type: string
         default: "./Dockerfile"
+      # Build-time values baked into the image, one KEY=value per line (e.g. the
+      # front's VITE_* settings). Public values only: they end up in the image.
+      build_args:
+        required: false
+        type: string
+        default: ""
       # Tests run before anything is built or tagged; empty = no test job.
       test_image:
         description: "Image the tests run in (e.g. golang:1.26, node:20, mcr.microsoft.com/dotnet/sdk:8.0)"
@@ -133,6 +139,7 @@ jobs:
         with:
           context: .
           file: ${{ inputs.dockerfile_path }}
+          build-args: ${{ inputs.build_args }}
           load: true
           tags: ${{ steps.string.outputs.app_name_lower }}:scan
           cache-to: type=gha,mode=max
@@ -152,6 +159,7 @@ jobs:
         with:
           context: .
           file: ${{ inputs.dockerfile_path }}
+          build-args: ${{ inputs.build_args }}
           push: true
           cache-from: type=gha
           tags: |
