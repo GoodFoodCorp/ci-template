@@ -29,6 +29,7 @@ jobs:
 |---|---|---|
 | `app_name` | — | Nom de l'image et du dossier `apps/back/<app_name>` du GitOps |
 | `dockerfile_path` | `./Dockerfile` | Dockerfile à construire |
+| `build_args` | `""` | Valeurs de build, une `CLÉ=valeur` par ligne (valeurs publiques uniquement : elles finissent dans l'image) |
 | `test_image` | `""` | Image dans laquelle les tests tournent |
 | `test_command` | `""` | Commande de tests ; vide = pas de job de tests |
 | `fail_on_vulnerabilities` | `true` | Bloque la publication si Trivy trouve une faille CRITICAL corrigeable |
