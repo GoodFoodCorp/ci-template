@@ -204,7 +204,19 @@ jobs:
             fi
 
             git commit -m "bump(${APP_NAME_LOWER}): update image tag to ${NEW_TAG}"
-            git push
+
+            # Several services released together push to the same branch: on
+            # a rejected push, replay this one-file commit on top and retry.
+            for attempt in 1 2 3 4 5; do
+              if git push origin HEAD:main; then
+                exit 0
+              fi
+              echo "Push refusé (tentative ${attempt}), rebase sur main..."
+              sleep $((attempt * 3))
+              git pull --rebase origin main
+            done
+            echo "Erreur: impossible de publier le tag ${NEW_TAG} dans le GitOps."
+            exit 1
           else
             echo "Erreur: Impossible de trouver un fichier deployment.yaml pour '${APP_NAME_LOWER}' dans le dossier apps/."
             exit 1
