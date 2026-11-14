@@ -171,6 +171,8 @@ jobs:
   # -------------------------------------------------------------
   update-gitops:
     needs: build-and-push
+    # always(): without it a skipped `test` job (service without tests) also skips this one.
+    if: always() && needs.build-and-push.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout du repo GitOps
