@@ -146,7 +146,7 @@ jobs:
           cache-from: type=gha
 
       - name: Scan de vulnérabilités (Trivy)
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0 (les tags sont préfixés "v")
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 (v0.28.0 dépend de setup-trivy@v0.2.1, supprimé)
         with:
           image-ref: ${{ steps.string.outputs.app_name_lower }}:scan
           severity: CRITICAL
